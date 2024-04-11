@@ -82,25 +82,26 @@ void viterbi_max_predecessor(
   }
 
   // NOTE: We will always enter exactly one of the three cases below. This
-  // allows us to move out the max comparison outside the loops, which results
-  // in a huge performance benefit in CUDA because of how divergent branches
-  // work. However, in order to do this, our compiler has to identify this
-  // fact...
+  // allows us to move out the max comparison outside the conditions, which
+  // results in a huge performance benefit in CUDA because of how divergent
+  // branches work. However, in order to do this, our compiler has to identify
+  // this fact...
   if (state % 16 == 15) {
     s = state;
-    p = chi_prev[instance * NUM_STATES + s] + transp2(s, state, HMM_CALL_ARGS);
+    p = transp2(s, state, HMM_CALL_ARGS);
   }
 
   if (state % 16 == 14) {
     s = state + 1;
-    p = chi_prev[instance * NUM_STATES + s] + transp3(s, state, HMM_CALL_ARGS);
+    p = transp3(s, state, HMM_CALL_ARGS);
   }
 
   if (state % 16 != 14 && state % 16 != 15) {
     s = state + 1;
-    p = chi_prev[instance * NUM_STATES + s] + transp4(s, state, HMM_CALL_ARGS);
+    p = transp4(s, state, HMM_CALL_ARGS);
   }
 
+  p += chi_prev[instance * NUM_STATES + s];
   if (p > *maxp) {
     *maxs = s;
     *maxp = p;
@@ -121,23 +122,25 @@ int forward_prob_predecessors(
     pidx += 1;
   }
 
+  // NOTE: We improve performance by moving the alpha_prev lookup outside the
+  // if-conditions. To perform this optimization, a compiler has to identify
+  // that we will always enter exactly one of the below three cases.
   if (state % 16 == 15) {
     pred = state;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp2(pred, state, HMM_CALL_ARGS);
-    pidx += 1;
+    probs[pidx] = transp2(pred, state, HMM_CALL_ARGS);
   }
 
   if (state % 16 == 14) {
     pred = state + 1;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp3(pred, state, HMM_CALL_ARGS);
-    pidx += 1;
+    probs[pidx] = transp3(pred, state, HMM_CALL_ARGS);
   }
 
   if (state % 16 != 14 && state % 16 != 15) {
     pred = state + 1;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp4(pred, state, HMM_CALL_ARGS);
-    pidx += 1;
+    probs[pidx] = transp4(pred, state, HMM_CALL_ARGS);
   }
+  probs[pidx] += alpha_prev[instance * NUM_STATES + pred];
+  pidx += 1;
 
   return pidx;
 }

@@ -20,7 +20,7 @@ class HMM:
         err, prog = nvrtc.nvrtcCreateProgram(str.encode(cu), bytes(src, 'utf-8'), 0, [], [])
         cuda_check(err)
 
-        opts = [b"-default-device"]
+        opts = [b"-default-device", b"-lineinfo"]
         err, = nvrtc.nvrtcCompileProgram(prog, len(opts), opts)
         cuda_check(err)
 
