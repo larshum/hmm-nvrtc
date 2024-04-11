@@ -165,6 +165,23 @@ class HMM:
     def _viterbi(self, obs, obs_lens, padded_lens, num_parallel):
         num_instances = len(obs_lens)
 
+        # If we run Viterbi on more than one sequence in parallel, we order
+        # them by length to reduce the amount of padding. This can
+        # significantly reduce the number of kernels we launch, especially if
+        # there is a huge difference in the lengths of the observations,
+        # thereby improving performance. For the kmer example, this results in
+        # a 30% reduction in the number of kernels we launch.
+        if num_parallel > 1 and num_parallel < num_instances:
+            idxobs = [(i, x, y, z) for (i, x), y, z in zip(enumerate(obs), obs_lens, padded_lens)]
+            ordered_idxobs = sorted(idxobs, key=lambda x: x[2])
+            permutation, obs, obs_lens, padded_lens, = zip(*ordered_idxobs)
+            obs_lens = np.array(obs_lens, dtype=np.int32)
+            padded_lens = np.array(padded_lens, dtype=np.int32)
+
+        # Flatten the observations after potentially reordering them based on
+        # length.
+        obs = np.array(obs).flatten()
+
         # Load the functions defined in the CUDA code
         viterbi_init = self.load_cuda_function(b"viterbi_init")
         viterbi_init_batch = self.load_cuda_function(b"viterbi_init_batch")
@@ -297,14 +314,24 @@ class HMM:
         cuda.cuMemHostUnregister(obs.ctypes.data)
         cuda.cuMemHostUnregister(result.ctypes.data)
 
-        return [r[:obs_lens[i]] for i, r in enumerate(result)]
+        result = [r[:obs_lens[i]] for i, r in enumerate(result)]
+
+        # If we ran more than one instance in parallel, we restore the original
+        # order here.
+        if num_parallel > 1 and num_parallel < num_instances:
+            result_tmp = result.copy()
+            for i, p in enumerate(permutation):
+                result_tmp[p] = result[i]
+            return result_tmp
+
+        return result
 
     def pad_signals(self, signals, lens):
         n = max(lens)
         ps = np.zeros((len(signals), n), dtype=self.obs_type)
         for i, s in enumerate(signals):
             ps[i][:len(s)] = s
-        return ps.flatten()
+        return ps
 
     def viterbi(self, signals, num_parallel=1):
         bos = self.batch_size - self.batch_overlap
@@ -316,7 +343,7 @@ class HMM:
     def forward(self, signals):
         lens = np.array([len(x) for x in signals])
         padded_signals = self.pad_signals(signals, lens)
-        return self._forward(padded_signals, lens)
+        return self._forward(padded_signals.flatten(), lens)
 
 # Generated code beyond this point
 
