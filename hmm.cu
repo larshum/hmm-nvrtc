@@ -150,7 +150,9 @@ const prob_t inf = 1.0 / 0.0;
 
 extern "C"
 __global__
-void forward_init(const obs_t *obs, int maxlen, prob_t *alpha_zero, HMM_DECL_PARAMS) {
+void forward_init(
+    const obs_t* __restrict__ obs, int maxlen, prob_t* __restrict__ alpha_zero,
+    HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
@@ -175,20 +177,19 @@ prob_t log_sum_exp(const prob_t probs[NUM_PREDS]) {
 
 extern "C"
 __global__ void forward_step(
-    const obs_t *obs, const int *obs_lens, int maxlen,
-    const prob_t *alpha_prev, prob_t *alpha_curr, int t, HMM_DECL_PARAMS) {
+    const obs_t* __restrict__ obs, const int* __restrict__ obs_lens, int maxlen,
+    const prob_t* __restrict__ alpha_prev, prob_t* __restrict__ alpha_curr,
+    int t, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
     size_t idx = instance * NUM_STATES + state;
     if (t < obs_lens[instance]) {
       obs_t x = obs[instance * maxlen + t];
-      prob_t psum;
       prob_t probs[NUM_PREDS];
       int pidx = forward_prob_predecessors(alpha_prev, instance, state, probs, HMM_CALL_ARGS);
       while (pidx < NUM_PREDS) probs[pidx++] = -inf;
-      psum = log_sum_exp(probs) + output_prob(state, x, HMM_CALL_ARGS);
-      alpha_curr[idx] = psum;
+      alpha_curr[idx] = log_sum_exp(probs) + output_prob(state, x, HMM_CALL_ARGS);
     } else if (t == obs_lens[instance]) {
       // We only need to copy the alpha data once - past this point, both alpha
       // vectors will contain the same data.
@@ -222,7 +223,7 @@ void forward_max_warp_reduce(volatile prob_t *maxp, unsigned int tid) {
 extern "C"
 __global__
 void forward_max(
-    const prob_t *alpha, prob_t *result) {
+    const prob_t* __restrict__ alpha, prob_t* __restrict__ result) {
   unsigned int idx = threadIdx.x;
   unsigned int instance = blockIdx.x;
   unsigned int lo = instance * NUM_STATES;
@@ -273,7 +274,8 @@ void forward_sum_warp_reduce(volatile prob_t *psum, unsigned int tid) {
 
 extern "C"
 __global__
-void forward_log_sum_exp(const prob_t *alpha, prob_t *result) {
+void forward_log_sum_exp(
+    const prob_t* __restrict__ alpha, prob_t* __restrict__ result) {
   unsigned int idx = threadIdx.x;
   unsigned int instance = blockIdx.x;
   unsigned int lo = instance * NUM_STATES;
@@ -307,7 +309,8 @@ void forward_log_sum_exp(const prob_t *alpha, prob_t *result) {
 extern "C"
 __global__
 void viterbi_init(
-    const obs_t *obs, int maxlen, prob_t *chi_zero, HMM_DECL_PARAMS) {
+    const obs_t* __restrict__ obs, int maxlen, prob_t* __restrict__ chi_zero,
+    HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
@@ -320,8 +323,9 @@ void viterbi_init(
 extern "C"
 __global__
 void viterbi_init_batch(
-    const obs_t *obs, const int *obs_lens, int maxlen, const state_t *seq,
-    prob_t *chi_zero, int t, HMM_DECL_PARAMS) {
+    const obs_t* __restrict__ obs, const int* __restrict__ obs_lens, int maxlen,
+    const state_t* __restrict__ seq, prob_t* __restrict__ chi_zero, int t,
+    HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
@@ -340,11 +344,20 @@ void viterbi_init_batch(
 extern "C"
 __global__
 void viterbi_forward(
-    const obs_t *obs, const int *obs_lens, int maxlen, const prob_t *chi_prev,
-    prob_t *chi_curr, state_t *zeta, int t, int k, HMM_DECL_PARAMS) {
+    const obs_t* __restrict__ obs, const int* __restrict__ obs_lens, int maxlen,
+    prob_t* __restrict__ chi1, prob_t* __restrict__ chi2,
+    state_t* __restrict__ zeta, int t, int k, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
+    prob_t *chi_prev, *chi_curr;
+    if (k % 2 == 0) {
+      chi_prev = chi2;
+      chi_curr = chi1;
+    } else {
+      chi_prev = chi1;
+      chi_curr = chi2;
+    }
     size_t idx = instance * NUM_STATES + state;
     size_t zeta_idx = instance * BATCH_SIZE * NUM_STATES + (k-1) * NUM_STATES + state;
     if (t+k < obs_lens[instance]) {
@@ -352,8 +365,7 @@ void viterbi_forward(
       state_t maxs;
       prob_t maxp = -inf;
       viterbi_max_predecessor(chi_prev, instance, state, &maxs, &maxp, HMM_CALL_ARGS);
-      maxp += output_prob(state, x, HMM_CALL_ARGS);
-      chi_curr[idx] = maxp;
+      chi_curr[idx] = maxp + output_prob(state, x, HMM_CALL_ARGS);
       zeta[zeta_idx] = maxs;
     } else if (t+k == obs_lens[instance]) {
       // We only need to copy over chi data once - past this point, we know
@@ -399,7 +411,8 @@ void viterbi_backward_warp_reduce(volatile prob_t *maxp, volatile state_t *maxs,
 extern "C"
 __global__
 void viterbi_backward(
-    const prob_t *chi, const state_t *zeta, state_t *out, int maxlen, int T) {
+    const prob_t* __restrict__ chi, const state_t* __restrict__ zeta,
+    state_t* __restrict__ out, int maxlen, int T) {
   size_t idx = threadIdx.x;
   size_t instance = blockIdx.x;
   size_t lo = instance * NUM_STATES;

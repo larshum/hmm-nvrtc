@@ -231,15 +231,14 @@ class HMM:
             err, = cuda.cuMemcpyHtoDAsync(cu_obs_lens, obs_lens_slice.ctypes.data, sz, stream)
             cuda_check(err)
 
-            slice_maxlen = np.array(max(padded_lens[i:i+slicelen]), dtype=np.int32)
-
             tpb = 256
             xblocks = (self.num_states + tpb - 1) // tpb
             blockdim = (xblocks, slicelen, 1)
             threaddim = (tpb, 1, 1)
 
             bos = self.batch_size - self.batch_overlap
-            nbatches = (slice_maxlen - bos + 1) // bos + 1
+            slice_maxlen = np.array(max(obs_lens_slice), dtype=np.int32)
+            nbatches = int(math.ceil(slice_maxlen / bos))
             for b in range(nbatches):
                 t = np.array(b * bos, dtype=np.int32)
                 if b == 0:
@@ -272,7 +271,6 @@ class HMM:
                         np.array(k, dtype=np.int32),
                     ] + self.table_ptrs
                     self.run_kernel(viterbi_forward, blockdim, threaddim, stream, args)
-                    chi_src, chi_dst = chi_dst, chi_src
 
                 backw_blockdim = (slicelen, 1, 1)
                 backw_threaddim = (512, 1, 1)
