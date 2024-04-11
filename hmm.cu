@@ -18,135 +18,129 @@ typedef float prob_t;
 #define NUM_OBS 101
 #define NUM_PREDS 5
 
-#define INIT_PROB(x) (init_prob((initp), (x)))
-#define OUTPUT_PROB(x,y) (output_prob((outp), (x), (y)))
-#define FIND_MAX_PREDS(chi_prev,instance,state,maxs,maxp) \
-  (generated_viterbi_max_predecessor((chi_prev), (instance), (state), (maxs), (maxp), gamma, gamma_inv, trans1, trans2))
-#define FIND_PROB_PREDS(alpha_prev,instance,state,probs) \
-  (generated_forward_prob_predecessors((alpha_prev), (instance), (state), (probs), gamma, gamma_inv, trans1, trans2))
+// The below macros are generated based on the tables declared in the Trellis
+// model. The first defines the parameters to be used in the declaration of a
+// function that uses data from the HMM. The second macro is used when passing
+// the HMM data as an argument to a function.
+//
+// The aim with these macros is to increase the ratio of code that we can
+// provide ahead of time, to make compilation easier.
+#define HMM_DECL_PARAMS \
+  const prob_t *initp, const prob_t *outp, const prob_t *trans1, const prob_t *trans2, const prob_t gamma, const prob_t gamma_inv
+#define HMM_CALL_ARGS \
+  initp, outp, trans1, trans2, gamma, gamma_inv
 
 __device__
-prob_t init_prob(const prob_t *initp, state_t x) {
+prob_t init_prob(state_t x, HMM_DECL_PARAMS) {
   return initp[((x / 16) % 16384) * 16 + x % 16];
 }
 
 __device__
-prob_t output_prob(const prob_t *outp, state_t x, obs_t o) {
+prob_t output_prob(state_t x, obs_t o, HMM_DECL_PARAMS) {
   return outp[o * 16384 + x / 16];
 }
 
 __device__
-prob_t transp1(
-    const prob_t *trans1, const prob_t *trans2,
-    state_t x, state_t y) {
+prob_t transp1(state_t x, state_t y, HMM_DECL_PARAMS) {
   return trans1[x / 16 * 4 + y / 16 % 4] + trans2[y % 16];
 }
 
 __device__
-prob_t transp2(const prob_t gamma) {
+prob_t transp2(state_t x, state_t y, HMM_DECL_PARAMS) {
   return gamma;
 }
 
 __device__
-prob_t transp3(const prob_t gamma_inv) {
+prob_t transp3(state_t x, state_t y, HMM_DECL_PARAMS) {
   return gamma_inv;
 }
 
 __device__
-prob_t transp4() {
+prob_t transp4(state_t x, state_t y, HMM_DECL_PARAMS) {
   return 0.0;
 }
 
+// NOTE: if the compiler fails to generate this more efficient approach, where
+// we generate the predecessors on the fly, it could use the precomputed
+// predecessors instead. The predecessor data could be part of the
+// "HMM_DECL_PARAMS" macro, in such a case.
 __device__
-void generated_viterbi_max_predecessor(
-    const prob_t *chi_prev, int instance, state_t state, state_t *maxs, prob_t *maxp,
-    prob_t gamma, prob_t gamma_inv, const prob_t *trans1, const prob_t *trans2) {
+void viterbi_max_predecessor(
+    const prob_t *chi_prev, int instance, state_t state, state_t *maxs,
+    prob_t *maxp, HMM_DECL_PARAMS) {
 
   state_t s;
   prob_t p;
 
-  // NOTE: reordering so that the loop takes place last allows us to skip one
-  // max comparison. This has a significant impact on performance, so it should
-  // be performed by the compiler.
-  if (state % 16 == 15) {
-    *maxs = state;
-    *maxp = chi_prev[instance * NUM_STATES + *maxs] + transp2(gamma);
-  }
-
-  if (state % 16 == 14) {
-    *maxs = state + 1;
-    *maxp = chi_prev[instance * NUM_STATES + *maxs] + transp3(gamma_inv);
-  }
-
-  if (state % 16 != 14 && state % 16 != 15) {
-    *maxs = state + 1;
-    *maxp = chi_prev[instance * NUM_STATES + *maxs] + transp4();
-  }
-
   for (int k = 0; k < 4; k++) {
     s = state / 64 % 4096 * 16 + k * 65536;
-    p = chi_prev[instance * NUM_STATES + s] + transp1(trans1, trans2, s, state);
+    p = chi_prev[instance * NUM_STATES + s] + transp1(s, state, HMM_CALL_ARGS);
     if (p > *maxp) {
       *maxs = s;
       *maxp = p;
     }
   }
+
+  // NOTE: We will always enter exactly one of the three cases below. This
+  // allows us to move out the max comparison outside the loops, which results
+  // in a huge performance benefit in CUDA because of how divergent branches
+  // work. However, in order to do this, our compiler has to identify this
+  // fact...
+  if (state % 16 == 15) {
+    s = state;
+    p = chi_prev[instance * NUM_STATES + s] + transp2(s, state, HMM_CALL_ARGS);
+  }
+
+  if (state % 16 == 14) {
+    s = state + 1;
+    p = chi_prev[instance * NUM_STATES + s] + transp3(s, state, HMM_CALL_ARGS);
+  }
+
+  if (state % 16 != 14 && state % 16 != 15) {
+    s = state + 1;
+    p = chi_prev[instance * NUM_STATES + s] + transp4(s, state, HMM_CALL_ARGS);
+  }
+
+  if (p > *maxp) {
+    *maxs = s;
+    *maxp = p;
+  }
 }
 
-// NOTE: if the compiler fails to generate this more efficient approach, it
-// could fall back to a version that uses precomputed predecessors.
 __device__
-int generated_forward_prob_predecessors(
+int forward_prob_predecessors(
     const prob_t *alpha_prev, int instance, state_t state, prob_t *probs,
-    prob_t gamma, prob_t gamma_inv, const prob_t *trans1, const prob_t *trans2) {
+    HMM_DECL_PARAMS) {
 
   int pidx = 0;
   state_t pred;
+
   for (int k = 0; k < 4; k++) {
     pred = state / 64 % 4096 * 16 + k * 65536;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp1(trans1, trans2, pred, state);
+    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp1(pred, state, HMM_CALL_ARGS);
     pidx += 1;
   }
 
   if (state % 16 == 15) {
     pred = state;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp2(gamma);
+    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp2(pred, state, HMM_CALL_ARGS);
     pidx += 1;
   }
 
   if (state % 16 == 14) {
     pred = state + 1;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp3(gamma_inv);
+    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp3(pred, state, HMM_CALL_ARGS);
     pidx += 1;
   }
 
   if (state % 16 != 14 && state % 16 != 15) {
     pred = state + 1;
-    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp4();
+    probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp4(pred, state, HMM_CALL_ARGS);
     pidx += 1;
   }
 
   return pidx;
 }
-
-// We use the below macros to enable a clean separation between our generated
-// model-specific code and a generic model-independent implementation of the
-// Forward and Viterbi algorithms.
-
-#define FORWARD_INIT_DECL(args...) \
-  __global__ void forward_init(args, const prob_t *initp, const prob_t *outp)
-
-#define FORWARD_STEP_DECL(args...) \
-  __global__ void forward_step(args, const prob_t *outp, const prob_t *trans1, const prob_t *trans2, const prob_t gamma, const prob_t gamma_inv)
-
-#define VITERBI_INIT(args...) \
-  __global__ void viterbi_init(args, const prob_t *initp, const prob_t *outp)
-
-#define VITERBI_INIT_BATCH(args...) \
-  __global__ void viterbi_init_batch(args, const prob_t *outp)
-
-#define VITERBI_FORWARD(args...) \
-  __global__ void viterbi_forward(args, const prob_t *outp, const prob_t *trans1, const prob_t *trans2, const prob_t gamma, const prob_t gamma_inv)
 
 /////////////////////////////
 // GENERAL IMPLEMENTATIONS //
@@ -154,12 +148,15 @@ int generated_forward_prob_predecessors(
 
 const prob_t inf = 1.0 / 0.0;
 
-extern "C" FORWARD_INIT_DECL(const obs_t *obs, int maxlen, prob_t *alpha_zero) {
+extern "C"
+__global__
+void forward_init(const obs_t *obs, int maxlen, prob_t *alpha_zero, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
     obs_t x = obs[instance * maxlen];
-    alpha_zero[instance * NUM_STATES + state] = INIT_PROB(state) + OUTPUT_PROB(state, x);
+    alpha_zero[instance * NUM_STATES + state] =
+      init_prob(state, HMM_CALL_ARGS) + output_prob(state, x, HMM_CALL_ARGS);
   }
 }
 
@@ -176,9 +173,10 @@ prob_t log_sum_exp(const prob_t probs[NUM_PREDS]) {
   return maxp + logf(sum);
 }
 
-extern "C" FORWARD_STEP_DECL(
+extern "C"
+__global__ void forward_step(
     const obs_t *obs, const int *obs_lens, int maxlen,
-    const prob_t *alpha_prev, prob_t *alpha_curr, int t) {
+    const prob_t *alpha_prev, prob_t *alpha_curr, int t, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
@@ -187,11 +185,13 @@ extern "C" FORWARD_STEP_DECL(
       obs_t x = obs[instance * maxlen + t];
       prob_t psum;
       prob_t probs[NUM_PREDS];
-      int pidx = FIND_PROB_PREDS(alpha_prev, instance, state, probs);
+      int pidx = forward_prob_predecessors(alpha_prev, instance, state, probs, HMM_CALL_ARGS);
       while (pidx < NUM_PREDS) probs[pidx++] = -inf;
-      psum = log_sum_exp(probs) + OUTPUT_PROB(state, x);
+      psum = log_sum_exp(probs) + output_prob(state, x, HMM_CALL_ARGS);
       alpha_curr[idx] = psum;
     } else if (t == obs_lens[instance]) {
+      // We only need to copy the alpha data once - past this point, both alpha
+      // vectors will contain the same data.
       alpha_curr[idx] = alpha_prev[idx];
     }
   }
@@ -304,19 +304,24 @@ void forward_log_sum_exp(const prob_t *alpha, prob_t *result) {
   }
 }
 
-extern "C" VITERBI_INIT(
-    const obs_t *obs, int maxlen, prob_t *chi_zero) {
+extern "C"
+__global__
+void viterbi_init(
+    const obs_t *obs, int maxlen, prob_t *chi_zero, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
     obs_t x = obs[instance * maxlen];
-    chi_zero[instance * NUM_STATES + state] = INIT_PROB(state) + OUTPUT_PROB(state, x);
+    chi_zero[instance * NUM_STATES + state] =
+      init_prob(state, HMM_CALL_ARGS) + output_prob(state, x, HMM_CALL_ARGS);
   }
 }
 
-extern "C" VITERBI_INIT_BATCH(
+extern "C"
+__global__
+void viterbi_init_batch(
     const obs_t *obs, const int *obs_lens, int maxlen, const state_t *seq,
-    prob_t *chi_zero, int t) {
+    prob_t *chi_zero, int t, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
@@ -324,7 +329,7 @@ extern "C" VITERBI_INIT_BATCH(
       obs_t x = obs[instance * maxlen + t];
       state_t last_state = seq[instance * maxlen + t - 1];
       if (state == last_state) {
-        chi_zero[instance * NUM_STATES + state] = OUTPUT_PROB(state, x);
+        chi_zero[instance * NUM_STATES + state] = output_prob(state, x, HMM_CALL_ARGS);
       } else {
         chi_zero[instance * NUM_STATES + state] = -inf;
       }
@@ -332,9 +337,11 @@ extern "C" VITERBI_INIT_BATCH(
   }
 }
 
-extern "C" VITERBI_FORWARD(
+extern "C"
+__global__
+void viterbi_forward(
     const obs_t *obs, const int *obs_lens, int maxlen, const prob_t *chi_prev,
-    prob_t *chi_curr, state_t *zeta, int t, int k) {
+    prob_t *chi_curr, state_t *zeta, int t, int k, HMM_DECL_PARAMS) {
   state_t state = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int instance = blockIdx.y;
   if (state < NUM_STATES) {
@@ -344,14 +351,15 @@ extern "C" VITERBI_FORWARD(
       obs_t x = obs[instance * maxlen + t + k];
       state_t maxs;
       prob_t maxp = -inf;
-      FIND_MAX_PREDS(chi_prev, instance, state, &maxs, &maxp);
-      maxp += OUTPUT_PROB(state, x);
+      viterbi_max_predecessor(chi_prev, instance, state, &maxs, &maxp, HMM_CALL_ARGS);
+      maxp += output_prob(state, x, HMM_CALL_ARGS);
       chi_curr[idx] = maxp;
       zeta[zeta_idx] = maxs;
     } else if (t+k == obs_lens[instance]) {
-      // We only need to copy over data once - past this point, we know both
-      // chi vectors will contain identical information. We set the zeta matrix
-      // as below to ensure we backtrack through it correctly.
+      // We only need to copy over chi data once - past this point, we know
+      // both chi vectors will contain identical information. We continue
+      // setting the zeta matrix as below to ensure we backtrack through it
+      // correctly.
       chi_curr[idx] = chi_prev[idx];
       zeta[zeta_idx] = state;
     } else {

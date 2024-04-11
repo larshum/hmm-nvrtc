@@ -51,14 +51,6 @@ class HMM:
         cuda_check(err)
         return gpu_data
 
-    def copy_args(self, args):
-        self.table_initial_prob = self.copy_to_gpu(np.array(args["initialProb"], dtype=self.prob_type), 0)
-        self.table_output_prob = self.copy_to_gpu(np.array(args["outputProb"], dtype=self.prob_type), 0)
-        self.table_trans1 = self.copy_to_gpu(np.array(args["trans1"], dtype=self.prob_type), 0)
-        self.table_trans2 = self.copy_to_gpu(np.array(args["trans2"], dtype=self.prob_type), 0)
-        self.table_gamma = np.array(args["gamma"], dtype=self.prob_type)
-        self.table_gamma_inv = np.array(args["gammaInv"], dtype=self.prob_type)
-
     def load_cuda_function(self, name):
         err, fun = cuda.cuModuleGetFunction(self.module, name)
         cuda_check(err)
@@ -117,9 +109,7 @@ class HMM:
             np.array([int(cu_obs)], dtype=np.uint64),
             maxlen,
             np.array([int(alpha_src)], dtype=np.uint64),
-            np.array([int(self.table_initial_prob)], dtype=np.uint64),
-            np.array([int(self.table_output_prob)], dtype=np.uint64)
-        ]
+        ] + self.table_ptrs
         self.run_kernel(forward_init, blockdim, threaddim, stream, args)
 
         # Forward steps
@@ -131,12 +121,7 @@ class HMM:
                 np.array([int(alpha_src)], dtype=np.uint64),
                 np.array([int(alpha_dst)], dtype=np.uint64),
                 np.array(t, dtype=np.int32),
-                np.array([int(self.table_output_prob)], dtype=np.uint64),
-                np.array([int(self.table_trans1)], dtype=np.uint64),
-                np.array([int(self.table_trans2)], dtype=np.uint64),
-                self.table_gamma,
-                self.table_gamma_inv
-            ]
+            ] + self.table_ptrs
             self.run_kernel(forward_step, blockdim, threaddim, stream, args)
             alpha_src, alpha_dst = alpha_dst, alpha_src
 
@@ -245,9 +230,7 @@ class HMM:
                         np.array([int(cu_obs)], dtype=np.uint64),
                         maxlen,
                         np.array([int(chi_src)], dtype=np.uint64),
-                        np.array([int(self.table_initial_prob)], dtype=np.uint64),
-                        np.array([int(self.table_output_prob)], dtype=np.uint64)
-                    ]
+                    ] + self.table_ptrs
                     self.run_kernel(viterbi_init, blockdim, threaddim, stream, args)
                 else:
                     args = [
@@ -257,8 +240,7 @@ class HMM:
                         np.array([int(cu_result)], dtype=np.uint64),
                         np.array([int(chi_src)], dtype=np.uint64),
                         np.array(t, dtype=np.int32),
-                        np.array([int(self.table_output_prob)], dtype=np.uint64)
-                    ]
+                    ] + self.table_ptrs
                     self.run_kernel(viterbi_init_batch, blockdim, threaddim, stream, args)
 
                 for k in range(1, self.batch_size):
@@ -271,12 +253,7 @@ class HMM:
                         np.array([int(zeta)], dtype=np.uint64),
                         t,
                         np.array(k, dtype=np.int32),
-                        np.array([int(self.table_output_prob)], dtype=np.uint64),
-                        np.array([int(self.table_trans1)], dtype=np.uint64),
-                        np.array([int(self.table_trans2)], dtype=np.uint64),
-                        self.table_gamma,
-                        self.table_gamma_inv,
-                    ]
+                    ] + self.table_ptrs
                     self.run_kernel(viterbi_forward, blockdim, threaddim, stream, args)
                     chi_src, chi_dst = chi_dst, chi_src
 
@@ -341,6 +318,18 @@ class HMM:
         padded_signals = self.pad_signals(signals, lens)
         return self._forward(padded_signals, lens)
 
+# Generated code beyond this point
+
+    def __init__(self, args):
+        self.num_states = 262144
+        self.batch_size = 1024
+        self.batch_overlap = 128
+        self.state_type = np.uint32
+        self.prob_type = np.float32
+        self.obs_type = np.uint8
+        self.compile_cuda("hmm.cu")
+        self.copy_args(args)
+
     def __del__(self):
         err, = cuda.cuMemFree(self.table_trans1)
         cuda_check(err)
@@ -355,12 +344,18 @@ class HMM:
         err, = cuda.cuCtxDestroy(self.ctx)
         cuda_check(err)
 
-    def __init__(self, args):
-        self.num_states = 262144
-        self.batch_size = 1024
-        self.batch_overlap = 128
-        self.state_type = np.uint32
-        self.prob_type = np.float32
-        self.obs_type = np.uint8
-        self.compile_cuda("hmm.cu")
-        self.copy_args(args)
+    def copy_args(self, args):
+        self.table_initial_prob = self.copy_to_gpu(np.array(args["initialProb"], dtype=self.prob_type), 0)
+        self.table_output_prob = self.copy_to_gpu(np.array(args["outputProb"], dtype=self.prob_type), 0)
+        self.table_trans1 = self.copy_to_gpu(np.array(args["trans1"], dtype=self.prob_type), 0)
+        self.table_trans2 = self.copy_to_gpu(np.array(args["trans2"], dtype=self.prob_type), 0)
+        self.table_gamma = np.array(args["gamma"], dtype=self.prob_type)
+        self.table_gamma_inv = np.array(args["gammaInv"], dtype=self.prob_type)
+        self.table_ptrs = [
+            np.array([int(self.table_initial_prob)], dtype=np.uint64),
+            np.array([int(self.table_output_prob)], dtype=np.uint64),
+            np.array([int(self.table_trans1)], dtype=np.uint64),
+            np.array([int(self.table_trans2)], dtype=np.uint64),
+            self.table_gamma,
+            self.table_gamma_inv
+        ]
