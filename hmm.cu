@@ -32,17 +32,17 @@ typedef float prob_t;
 
 __device__
 prob_t init_prob(state_t x, HMM_DECL_PARAMS) {
-  return initp[((x / 16) % 16384) * 16 + x % 16];
+  return initp[x % 16384 * 16 + x / 16384];
 }
 
 __device__
 prob_t output_prob(state_t x, obs_t o, HMM_DECL_PARAMS) {
-  return outp[o * 16384 + x / 16];
+  return outp[o * 16384 + x % 16384];
 }
 
 __device__
 prob_t transp1(state_t x, state_t y, HMM_DECL_PARAMS) {
-  return trans1[x / 16 * 4 + y / 16 % 4] + trans2[y % 16];
+  return trans1[x / 4096 % 4 * 16384 + y % 16384] + trans2[y / 16384];
 }
 
 __device__
@@ -73,7 +73,7 @@ void viterbi_max_predecessor(
   prob_t p;
 
   for (int k = 0; k < 4; k++) {
-    s = state / 64 % 4096 * 16 + k * 65536;
+    s = state / 4 % 4096 + k * 4096;
     p = chi_prev[instance * NUM_STATES + s] + transp1(s, state, HMM_CALL_ARGS);
     if (p > *maxp) {
       *maxs = s;
@@ -86,18 +86,18 @@ void viterbi_max_predecessor(
   // results in a huge performance benefit in CUDA because of how divergent
   // branches work. However, in order to do this, our compiler has to identify
   // this fact...
-  if (state % 16 == 15) {
+  if (state / 16384 == 15) {
     s = state;
     p = transp2(s, state, HMM_CALL_ARGS);
   }
 
-  if (state % 16 == 14) {
-    s = state + 1;
+  if (state / 16384 == 14) {
+    s = state + 16384;
     p = transp3(s, state, HMM_CALL_ARGS);
   }
 
-  if (state % 16 != 14 && state % 16 != 15) {
-    s = state + 1;
+  if (state / 16384 != 14 && state / 16384 != 15) {
+    s = state + 16384;
     p = transp4(s, state, HMM_CALL_ARGS);
   }
 
@@ -117,7 +117,7 @@ int forward_prob_predecessors(
   state_t pred;
 
   for (int k = 0; k < 4; k++) {
-    pred = state / 64 % 4096 * 16 + k * 65536;
+    pred = state / 4 % 4096 + k * 4096;
     probs[pidx] = alpha_prev[instance * NUM_STATES + pred] + transp1(pred, state, HMM_CALL_ARGS);
     pidx += 1;
   }
@@ -125,18 +125,18 @@ int forward_prob_predecessors(
   // NOTE: We improve performance by moving the alpha_prev lookup outside the
   // if-conditions. To perform this optimization, a compiler has to identify
   // that we will always enter exactly one of the below three cases.
-  if (state % 16 == 15) {
+  if (state / 16384 == 15) {
     pred = state;
     probs[pidx] = transp2(pred, state, HMM_CALL_ARGS);
   }
 
-  if (state % 16 == 14) {
-    pred = state + 1;
+  if (state / 16384 == 14) {
+    pred = state + 16384;
     probs[pidx] = transp3(pred, state, HMM_CALL_ARGS);
   }
 
-  if (state % 16 != 14 && state % 16 != 15) {
-    pred = state + 1;
+  if (state / 16384 != 14 && state / 16384 != 15) {
+    pred = state + 16384;
     probs[pidx] = transp4(pred, state, HMM_CALL_ARGS);
   }
   probs[pidx] += alpha_prev[instance * NUM_STATES + pred];

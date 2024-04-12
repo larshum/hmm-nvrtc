@@ -31,12 +31,12 @@ for i, seq in enumerate(out):
     print(f"Seq #{i+1} ({p[i]})")
     col = 0
     for s in seq:
-        if s % 16 == 0:
+        if s // 16384 == 0:
             if col == 80:
                 print("")
                 col = 0
             col += 1
-            print(f"{outc[s // 16 % 4]}", end="")
+            print(f"{outc[s % 4]}", end="")
     print("")
 print(t1-t0)
 print(t3-t2)
