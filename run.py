@@ -16,11 +16,6 @@ if model_path:
 else:
     tables, signals = c.get_weather_inputs_trellis(signals_path)
 
-tables['gammaInv'] = np.log(1.0 - np.exp(tables['gamma']))
-tables['trans1'] = flatten(tables['trans1'].T)
-tables['outputProb'] = flatten(tables['outputProb'].T)
-tables['initialProb'] = flatten(tables['initialProb'])
-
 hmm = HMM(tables)
 
 t0 = time.time()

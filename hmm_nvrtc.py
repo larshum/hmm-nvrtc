@@ -356,26 +356,41 @@ class HMM:
         self.copy_args(args)
 
     def __del__(self):
-        err, = cuda.cuMemFree(self.table_trans1)
-        cuda_check(err)
-        err, = cuda.cuMemFree(self.table_trans2)
-        cuda_check(err)
-        err, = cuda.cuMemFree(self.table_output_prob)
-        cuda_check(err)
-        err, = cuda.cuMemFree(self.table_initial_prob)
-        cuda_check(err)
-        err, = cuda.cuModuleUnload(self.module)
-        cuda_check(err)
-        err, = cuda.cuCtxDestroy(self.ctx)
-        cuda_check(err)
+        if hasattr(self, "tables_trans1"):
+            err, = cuda.cuMemFree(self.table_trans1)
+            cuda_check(err)
+        if hasattr(self, "table_trans2"):
+            err, = cuda.cuMemFree(self.table_trans2)
+            cuda_check(err)
+        if hasattr(self, "table_output_prob"):
+            err, = cuda.cuMemFree(self.table_output_prob)
+            cuda_check(err)
+        if hasattr(self, "table_initial_prob"):
+            err, = cuda.cuMemFree(self.table_initial_prob)
+            cuda_check(err)
+        if hasattr(self, "module"):
+            err, = cuda.cuModuleUnload(self.module)
+            cuda_check(err)
+        if hasattr(self, "ctx"):
+            err, = cuda.cuCtxDestroy(self.ctx)
+            cuda_check(err)
 
     def copy_args(self, args):
+        # Reshape the arrays for better locality. This could either be
+        # performed automatically by the compiler or manually by us.
+        args['trans1'] = args['trans1'].reshape(4,4,4,4,4,4,4,4).transpose(1,2,3,4,5,6,7,0).flatten()
+        args['outputProb'] = args['outputProb'].reshape(4,4,4,4,4,4,4,101).transpose(7,0,1,2,3,4,5,6).flatten()
+        args['initialProb'] = args['initialProb'].flatten()
+
         self.table_initial_prob = self.copy_to_gpu(np.array(args["initialProb"], dtype=self.prob_type), 0)
         self.table_output_prob = self.copy_to_gpu(np.array(args["outputProb"], dtype=self.prob_type), 0)
         self.table_trans1 = self.copy_to_gpu(np.array(args["trans1"], dtype=self.prob_type), 0)
         self.table_trans2 = self.copy_to_gpu(np.array(args["trans2"], dtype=self.prob_type), 0)
         self.table_gamma = np.array(args["gamma"], dtype=self.prob_type)
-        self.table_gamma_inv = np.array(args["gammaInv"], dtype=self.prob_type)
+        # NOTE: the compiler needs to figure out that it can pre-compute the
+        # gamma inverse instead of repeatedly recomputing it, which seems to be
+        # rather inefficient.
+        self.table_gamma_inv = np.array(np.log(1.0 - np.exp(args["gamma"])), dtype=self.prob_type)
         self.table_ptrs = [
             np.array([int(self.table_initial_prob)], dtype=np.uint64),
             np.array([int(self.table_output_prob)], dtype=np.uint64),
