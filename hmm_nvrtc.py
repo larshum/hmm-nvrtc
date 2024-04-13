@@ -80,22 +80,19 @@ class HMM:
         forward_max = self.load_cuda_function(b"forward_max")
         forward_log_sum_exp = self.load_cuda_function(b"forward_log_sum_exp")
 
-        err, stream = cuda.cuStreamCreate(0)
-        cuda_check(err)
-
         # Copy data to the GPU
         maxlen = np.array(max(obs_lens), dtype=np.int32)
-        cu_obs_lens = self.copy_to_gpu(obs_lens.astype(dtype=np.int32), stream)
-        cu_obs = self.copy_to_gpu(obs.astype(dtype=self.obs_type), stream)
+        cu_obs_lens = self.copy_to_gpu(obs_lens.astype(dtype=np.int32), 0)
+        cu_obs = self.copy_to_gpu(obs.astype(dtype=self.obs_type), 0)
 
         # Allocate working data on the GPU
         alpha_sz = num_instances * self.num_states * np.dtype(self.prob_type).itemsize
-        err, alpha_src = cuda.cuMemAllocAsync(alpha_sz, stream)
+        err, alpha_src = cuda.cuMemAllocAsync(alpha_sz, 0)
         cuda_check(err)
-        err, alpha_dst = cuda.cuMemAllocAsync(alpha_sz, stream)
+        err, alpha_dst = cuda.cuMemAllocAsync(alpha_sz, 0)
         cuda_check(err)
         result_sz = num_instances * np.dtype(self.prob_type).itemsize
-        err, cu_result = cuda.cuMemAllocAsync(result_sz, stream)
+        err, cu_result = cuda.cuMemAllocAsync(result_sz, 0)
         cuda_check(err)
 
         # Perform the Forward algorithm using the CUDA kernels
@@ -110,7 +107,7 @@ class HMM:
             maxlen,
             np.array([int(alpha_src)], dtype=np.uint64),
         ] + self.table_ptrs
-        self.run_kernel(forward_init, blockdim, threaddim, stream, args)
+        self.run_kernel(forward_init, blockdim, threaddim, 0, args)
 
         # Forward steps
         for t in range(1, maxlen):
@@ -122,7 +119,7 @@ class HMM:
                 np.array([int(alpha_dst)], dtype=np.uint64),
                 np.array(t, dtype=np.int32),
             ] + self.table_ptrs
-            self.run_kernel(forward_step, blockdim, threaddim, stream, args)
+            self.run_kernel(forward_step, blockdim, threaddim, 0, args)
             alpha_src, alpha_dst = alpha_dst, alpha_src
 
         # LogSumExp step (compute max + logarithmic sum)
@@ -132,32 +129,29 @@ class HMM:
             np.array([int(alpha_src)], dtype=np.uint64),
             np.array([int(cu_result)], dtype=np.uint64)
         ]
-        self.run_kernel(forward_max, reduce_blockdim, reduce_threaddim, stream, args)
+        self.run_kernel(forward_max, reduce_blockdim, reduce_threaddim, 0, args)
         args = [
             np.array([int(alpha_src)], dtype=np.uint64),
             np.array([int(cu_result)], dtype=np.uint64)
         ]
-        self.run_kernel(forward_log_sum_exp, reduce_blockdim, reduce_threaddim, stream, args)
+        self.run_kernel(forward_log_sum_exp, reduce_blockdim, reduce_threaddim, 0, args)
 
         # Copy result from the GPU
-        result = self.copy_from_gpu(cu_result, num_instances, self.prob_type, stream)
+        result = self.copy_from_gpu(cu_result, num_instances, self.prob_type, 0)
 
         # Free up allocated data on the GPU
-        err, = cuda.cuMemFreeAsync(cu_obs_lens, stream)
+        err, = cuda.cuMemFreeAsync(cu_obs_lens, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(cu_obs, stream)
+        err, = cuda.cuMemFreeAsync(cu_obs, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(alpha_src, stream)
+        err, = cuda.cuMemFreeAsync(alpha_src, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(alpha_dst, stream)
+        err, = cuda.cuMemFreeAsync(alpha_dst, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(cu_result, stream)
-        cuda_check(err)
-
-        err, = cuda.cuStreamSynchronize(stream)
+        err, = cuda.cuMemFreeAsync(cu_result, 0)
         cuda_check(err)
 
-        err, = cuda.cuStreamDestroy(stream)
+        err, = cuda.cuCtxSynchronize()
         cuda_check(err)
 
         return result
@@ -188,28 +182,25 @@ class HMM:
         viterbi_forward = self.load_cuda_function(b"viterbi_forward")
         viterbi_backward = self.load_cuda_function(b"viterbi_backward")
 
-        err, stream = cuda.cuStreamCreate(0)
-        cuda_check(err)
-
         # Allocate observation data on the GPU
         maxlen = np.array(max(padded_lens), dtype=np.int32)
         obs_sz = num_parallel * maxlen * np.dtype(self.obs_type).itemsize
-        err, cu_obs = cuda.cuMemAllocAsync(obs_sz, stream)
+        err, cu_obs = cuda.cuMemAllocAsync(obs_sz, 0)
         cuda_check(err)
         obs_lens_sz = num_parallel * obs_lens.itemsize
-        err, cu_obs_lens = cuda.cuMemAllocAsync(obs_lens_sz, stream)
+        err, cu_obs_lens = cuda.cuMemAllocAsync(obs_lens_sz, 0)
         cuda_check(err)
 
         # Allocate working data on the GPU
         chi_sz = num_parallel * self.num_states * np.dtype(self.prob_type).itemsize
-        err, chi_src = cuda.cuMemAllocAsync(chi_sz, stream)
+        err, chi_src = cuda.cuMemAllocAsync(chi_sz, 0)
         cuda_check(err)
-        err, chi_dst = cuda.cuMemAllocAsync(chi_sz, stream)
+        err, chi_dst = cuda.cuMemAllocAsync(chi_sz, 0)
         cuda_check(err)
         zeta_sz = num_parallel * self.batch_size * self.num_states * np.dtype(self.state_type).itemsize
-        err, zeta = cuda.cuMemAllocAsync(zeta_sz, stream)
+        err, zeta = cuda.cuMemAllocAsync(zeta_sz, 0)
         cuda_check(err)
-        err, cu_result = cuda.cuMemAllocAsync(num_parallel * maxlen * np.dtype(self.state_type).itemsize, stream)
+        err, cu_result = cuda.cuMemAllocAsync(num_parallel * maxlen * np.dtype(self.state_type).itemsize, 0)
         cuda_check(err)
 
         result = np.zeros((num_instances, maxlen), dtype=self.state_type)
@@ -224,11 +215,11 @@ class HMM:
             slicelen = min(i + num_parallel, num_instances) - i
             obs_slice = obs[i * maxlen : (i + slicelen) * maxlen]
             sz = slicelen * maxlen * obs.itemsize
-            err, = cuda.cuMemcpyHtoDAsync(cu_obs, obs_slice.ctypes.data, sz, stream)
+            err, = cuda.cuMemcpyHtoDAsync(cu_obs, obs_slice.ctypes.data, sz, 0)
             cuda_check(err)
             obs_lens_slice = obs_lens[i:i+slicelen]
             sz = slicelen * obs_lens.itemsize
-            err, = cuda.cuMemcpyHtoDAsync(cu_obs_lens, obs_lens_slice.ctypes.data, sz, stream)
+            err, = cuda.cuMemcpyHtoDAsync(cu_obs_lens, obs_lens_slice.ctypes.data, sz, 0)
             cuda_check(err)
 
             tpb = 256
@@ -247,7 +238,7 @@ class HMM:
                         maxlen,
                         np.array([int(chi_src)], dtype=np.uint64),
                     ] + self.table_ptrs
-                    self.run_kernel(viterbi_init, blockdim, threaddim, stream, args)
+                    self.run_kernel(viterbi_init, blockdim, threaddim, 0, args)
                 else:
                     args = [
                         np.array([int(cu_obs)], dtype=np.uint64),
@@ -257,7 +248,7 @@ class HMM:
                         np.array([int(chi_src)], dtype=np.uint64),
                         np.array(t, dtype=np.int32),
                     ] + self.table_ptrs
-                    self.run_kernel(viterbi_init_batch, blockdim, threaddim, stream, args)
+                    self.run_kernel(viterbi_init_batch, blockdim, threaddim, 0, args)
 
                 for k in range(1, self.batch_size):
                     args = [
@@ -270,7 +261,7 @@ class HMM:
                         t,
                         np.array(k, dtype=np.int32),
                     ] + self.table_ptrs
-                    self.run_kernel(viterbi_forward, blockdim, threaddim, stream, args)
+                    self.run_kernel(viterbi_forward, blockdim, threaddim, 0, args)
 
                 backw_blockdim = (slicelen, 1, 1)
                 backw_threaddim = (512, 1, 1)
@@ -281,31 +272,28 @@ class HMM:
                     maxlen,
                     t
                 ]
-                self.run_kernel(viterbi_backward, backw_blockdim, backw_threaddim, stream, args)
+                self.run_kernel(viterbi_backward, backw_blockdim, backw_threaddim, 0, args)
 
             # Copy result from the GPU and add to the result
             sz = slicelen * maxlen * result.itemsize
-            err, = cuda.cuMemcpyDtoHAsync(result[i:i+slicelen].ctypes.data, cu_result, sz, stream)
+            err, = cuda.cuMemcpyDtoHAsync(result[i:i+slicelen].ctypes.data, cu_result, sz, 0)
             cuda_check(err)
 
         # Free up allocated data on the GPU
-        err, = cuda.cuMemFreeAsync(cu_obs_lens, stream)
+        err, = cuda.cuMemFreeAsync(cu_obs_lens, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(cu_obs, stream)
+        err, = cuda.cuMemFreeAsync(cu_obs, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(chi_src, stream)
+        err, = cuda.cuMemFreeAsync(chi_src, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(chi_dst, stream)
+        err, = cuda.cuMemFreeAsync(chi_dst, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(zeta, stream)
+        err, = cuda.cuMemFreeAsync(zeta, 0)
         cuda_check(err)
-        err, = cuda.cuMemFreeAsync(cu_result, stream)
-        cuda_check(err)
-
-        err, = cuda.cuStreamSynchronize(stream)
+        err, = cuda.cuMemFreeAsync(cu_result, 0)
         cuda_check(err)
 
-        err, = cuda.cuStreamDestroy(stream)
+        err, = cuda.cuCtxSynchronize()
         cuda_check(err)
 
         # Unpin the CPU data
