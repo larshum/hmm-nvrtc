@@ -5,9 +5,6 @@ import os
 import sys
 import time
 
-def flatten(xss):
-    return [x for xs in xss for x in xs]
-
 model_path = os.getenv("MODEL_PATH")
 signals_path = os.getenv("SIGNALS_PATH")
 
